@@ -1,0 +1,32 @@
+﻿Notes explaining Matlab and R Coding: 
+
+Matlab: 
+
+SimulationScript performs scaled up version of Simulation 2 in R. BootScript performs scaled up 
+version of Bootstrap simulations. Remaining codes are functions needed for these Scripts to run 
+and explained throughout the Scripts and with comments in the functions themselfes. Some 
+technical details of implementation:
+
+Starting values for Optimization for GARCH models were created the following way: Starting 
+values around simple non-time varying parameterization of the models. Then for first simulation 
+use a global solver with these starting values with T=10000. The estimates from this simulation 
+are then the starting values for a local solver for all other simulations. In case of convergence 
+problems, a global solver is used. Local solver is Nelder Mead algorithm. Constraints are 
+imposed by a punishment term in the objective function. One such constraint for example is that 
+nu > 2 to avoid an undefined variance. Also nu < 200 as for larger nu the distribution basically 
+becomes normal which leads to numerical issues as there isn’t much of a difference between nu = 
+200 and nu going to infinity so the optimizer sometimes lets nu become infinite leading 
+to problems with further calculations and evaluation of the gamma function which shows up in 
+the t-pdf. Further constraints are usually positivity constraints or model-specific constraints. 
+Stationarity was not imposed due to constraints (but explosiveness leading to undefined or 
+infinite Likelihood expressions were accounted for by a punishment as well). Starting variance 
+for GARCH recursion is always the unconditional empirical variance. h-step forecast from 
+Egarch is the median and not the mean in case the Egarch forecast differs sufficiently from the 
+GJR forecast because in some forecast-simulations the Egarch process becomes explosive. This 
+does not affect the median but heavily affects the mean. We usually want to use the mean 
+though as this minimizes the expected IS distance and always using the median can cause outliers 
+in the IS distance. Seeds are fixed for forecast-simulation.
+
+Robustness towards starting values and convergence problems and explosiveness was only 
+needed when scaling up the number of simulation hence this is largely left out of the R code for 
+simplicity. The data application does not show any of these problems.

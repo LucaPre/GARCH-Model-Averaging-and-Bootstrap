@@ -1,0 +1,1116 @@
+---
+title: "Seminar in Applied Financial Econometrics"
+output: html_document
+date: "2024-10-30"
+author: "Luca Preuße and co-author" 
+---
+# WARNING: Some parts take a long time to run. Running time can always be decreased by decreasing number of simulations. Data application runs relatively fast except for Bootstrap so you may execute that chunk step by step instead of running the full chunk. Full results from R are in the html that we submitted.  
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r packages}
+library(Matrix)
+library(optimx)
+library(stats)
+```
+
+```{r likelihoods}
+######## Compute log-likelihoods (and more) of GARCH-type models. Codes are all almost equivalent and comments mainly in tGARCHLikelihood. ########  
+
+# GARCH model
+tGARCHLikelihood <- function(theta, y, yboot) {
+  
+  # Degree of freedom
+  nu <- min(200, theta[1])
+  
+  # GARCH specific parameters
+  a0 <- theta[2]
+  a <- theta[3]
+  b <- theta[4]
+  params <- c(a0, a, b)
+  
+  T <- length(y)  # Sample size
+  sigmasq_initial <- var(y[2:T] - y[1:(T-1)])*(nu-2)/nu  # Initialize variance as unconditional variance
+  
+  LogLik <- rep(0, T-1)
+  sigma_sq <- rep(0, T)
+  sigma_sq[2] <- sigmasq_initial
+  
+  # Log likelihood of the first period
+  LogLik[1] <- logtdens(yboot[2], y[1], sigmasq_initial, nu)
+  
+  # Loop for updating variance and computing log likelihood
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Error of past period
+    sigma_sq[t] <- a0 + a * u^2 + b * sigma_sq[t-1]  # Update variance
+    LogLik[t-1] <- logtdens(yboot[t], y[t-1], sigma_sq[t], nu)  # Period t log likelihood
+  }
+  
+  # Criterion to minimize (negative of log-likelihood)
+  Q <- -sum(LogLik)
+  sumLik <- sum(LogLik)
+  
+  # One period variance forecast
+  t <- t + 1
+  u <- y[t-1] - y[t-2]
+  sigma_sq_h1 <- a0 + a * u^2 + b * sigma_sq[t-1]
+  
+  # Enforce degree of freedom larger than 2
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce parameters to be larger than 0
+  if (min(params) < 0) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Rule out infinity or not defined expressions
+  if (is.infinite(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.nan(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.na(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Return results as a list
+  return(list(Q = Q, sigma_sq = sigma_sq, sumLik = sumLik, sigma_sq_h1 = sigma_sq_h1, params = params))
+}
+
+# ARCH model
+tARCHLikelihood <- function(theta, y, yboot) {
+  
+  # Define parameters
+  a0 <- theta[2]
+  nu <- min(200, theta[1])
+  a <- theta[3]
+  params <- c(a0, a)
+  
+  T <- length(y)  # Sample size
+  sigmasq_initial <- var(y[2:T] - y[1:(T-1)])*(nu-2)/nu  # Initialize variance as unconditional variance
+  
+  LogLik <- rep(0, T-1)
+  sigma_sq <- rep(0, T)
+  sigma_sq[2] <- sigmasq_initial
+  
+  # Log likelihood of the first period
+  LogLik[1] <- logtdens(yboot[2], y[1], sigmasq_initial, nu)
+  
+  # Loop for updating variance and computing log likelihood
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Error of past period
+    sigma_sq[t] <- a0 + a * u^2  # Update variance (ARCH model, no GARCH term)
+    LogLik[t-1] <- logtdens(yboot[t], y[t-1], sigma_sq[t], nu)  # Period t log likelihood
+  }
+  
+  # Criterion to minimize (negative of log-likelihood)
+  Q <- -sum(LogLik)
+  sumLik <- sum(LogLik)
+  
+  # One period variance forecast
+  t <- t + 1
+  u <- y[t-1] - y[t-2]
+  sigma_sq_h1 <- a0 + a * u^2
+  
+  # Enforce degree of freedom larger than 2
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce parameters to be larger than 0
+  if (min(params) < 0) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Rule out infinity or not defined expressions
+  if (is.infinite(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.nan(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.na(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Return results as a list
+  return(list(Q = Q, sigma_sq = sigma_sq, sumLik = sumLik, sigma_sq_h1 = sigma_sq_h1, params = params))
+}
+
+# GJR GARCH model
+tGJRLikelihood <- function(theta, y, yboot) {
+  
+  # Define parameters
+  a0 <- theta[2]
+  nu <- min(200, theta[1])
+  a <- theta[3]
+  b <- theta[4]
+  c <- theta[5]
+  params <- c(a0, a, b, c)
+  
+  T <- length(y)  # Sample size
+  sigmasq_initial <- var(y[2:T] - y[1:(T-1)])*(nu-2)/nu  # Initialize variance as unconditional variance
+  
+  LogLik <- rep(0, T-1)
+  sigma_sq <- rep(0, T)
+  sigma_sq[2] <- sigmasq_initial
+  
+  # Log likelihood of the first period
+  LogLik[1] <- logtdens(yboot[2], y[1], sigmasq_initial, nu)
+  
+  # Loop for updating variance and computing log likelihood
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Error of past period
+    sigma_sq[t] <- a0 + (a + c * (u < 0)) * u^2 + b * sigma_sq[t-1]  # GJR-GARCH variance update
+    LogLik[t-1] <- logtdens(yboot[t], y[t-1], sigma_sq[t], nu)  # Period t log likelihood
+  }
+  
+  # Criterion to minimize (negative of log-likelihood)
+  Q <- -sum(LogLik)
+  sumLik <- sum(LogLik)
+  
+  # One period variance forecast
+  t <- t + 1
+  u <- y[t-1] - y[t-2]
+  sigma_sq_h1 <- a0 + (a + c * (u < 0)) * u^2 + b * sigma_sq[t-1]
+  
+  # Enforce a+c to be larger than 0
+  if (a + c < 0) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce degree of freedom larger than 2
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce parameters to be larger than 0
+  if (min(params[1:3]) < 0) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Rule out infinity or not defined expressions
+  if (is.infinite(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.nan(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.na(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Return results as a list
+  return(list(Q = Q, sigma_sq = sigma_sq, sumLik = sumLik, sigma_sq_h1 = sigma_sq_h1, params = params))
+}
+
+# EGARCH model
+tEGARCHLikelihood <- function(theta, y, yboot) {
+  
+  # Define parameters
+  a0 <- theta[2]
+  nu <- min(200, theta[1])
+  a <- theta[3]
+  b <- theta[4]
+  c <- theta[5]
+  params <- c(a0, a, b, c)
+  
+  T <- length(y)  # Sample size
+  sigmasq_initial <- var(y[2:T] - y[1:(T-1)])*(nu-2)/nu  # Initialize variance as unconditional variance
+  
+  LogLik <- rep(0, T-1)
+  sigma_sq <- rep(0, T)
+  sigma_sq[2] <- sigmasq_initial
+  
+  # Log likelihood of the first period
+  LogLik[1] <- logtdens(yboot[2], y[1], sigmasq_initial, nu)
+  
+  # Loop for updating variance and computing log likelihood
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Error of past period
+    sigma_sq[t] <- exp(a0 + a * u + c * abs(u) + b * log(sigma_sq[t-1]))  # EGARCH variance update
+    LogLik[t-1] <- logtdens(yboot[t], y[t-1], sigma_sq[t], nu)  # Period t log likelihood
+  }
+  
+  # Criterion to minimize (negative of log-likelihood)
+  Q <- -sum(LogLik)
+  sumLik <- sum(LogLik)
+  
+  # One period variance forecast
+  t <- t + 1
+  u <- y[t-1] - y[t-2]
+  sigma_sq_h1 <- exp(a0 + a * u + c * abs(u) + b * log(sigma_sq[t-1]))
+  
+  # Enforce degree of freedom larger than 2
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Rule out infinity or not defined expressions
+  if (is.infinite(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.nan(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.na(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Return results as a list
+  return(list(Q = Q, sigma_sq = sigma_sq, sumLik = sumLik, sigma_sq_h1 = sigma_sq_h1, params = params))
+}
+
+# Taylor/Schwert model
+tTSLikelihood <- function(theta, y, yboot) {
+  
+  # Define parameters
+  a0 <- theta[2]
+  nu <- min(200, theta[1])
+  a <- theta[3]
+  b <- theta[4]
+  params <- c(a0, a, b)
+  
+  T <- length(y)  # Sample size
+  sigmasq_initial <- var(y[2:T] - y[1:(T-1)])*(nu-2)/nu  # Initialize variance as unconditional variance
+  
+  LogLik <- rep(0, T-1)
+  sigma_sq <- rep(0, T)
+  sigma_sq[2] <- sigmasq_initial
+  
+  # Log likelihood of the first period
+  LogLik[1] <- logtdens(yboot[2], y[1], sigmasq_initial, nu)
+  
+  # Loop for updating variance and computing log likelihood
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Error of past period
+    sigma_sq[t] <- (a0 + a * abs(u) + b * sqrt(sigma_sq[t-1]))^2  # Taylor-Schwert variance update
+    LogLik[t-1] <- logtdens(yboot[t], y[t-1], sigma_sq[t], nu)  # Period t log likelihood
+  }
+  
+  # Criterion to minimize (negative of log-likelihood)
+  Q <- -sum(LogLik)
+  sumLik <- sum(LogLik)
+  
+  # One period variance forecast
+  t <- t + 1
+  u <- y[t-1] - y[t-2]
+  sigma_sq_h1 <- (a0 + a * abs(u) + b * sqrt(sigma_sq[t-1]))^2
+  
+  # Enforce degree of freedom larger than 2
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce parameters to be larger than 0
+  if (min(params) < 0) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Rule out infinity or not defined expressions
+  if (is.infinite(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.nan(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.na(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Return results as a list
+  return(list(Q = Q, sigma_sq = sigma_sq, sumLik = sumLik, sigma_sq_h1 = sigma_sq_h1, params = params))
+}
+
+# APGARCH model
+tAPGARCHLikelihood <- function(theta, y, yboot) {
+  
+  # Define parameters
+  a0 <- theta[2]
+  nu <- min(200, theta[1])
+  a <- theta[3]
+  b <- theta[4]
+  c <- theta[5]
+  delta <- theta[6]
+  params <- c(a0, a, b, c, delta)
+  
+  T <- length(y)  # Sample size
+  sigmasq_initial <- var(y[2:T] - y[1:(T-1)])*(nu-2)/nu  # Initialize variance as unconditional variance
+  
+  LogLik <- rep(0, T-1)
+  sigma_sq <- rep(0, T)
+  sigma_sq[2] <- sigmasq_initial
+  
+  # Log likelihood of the first period
+  LogLik[1] <- logtdens(yboot[2], y[1], sigmasq_initial, nu)
+  
+  # Loop for updating variance and computing log likelihood
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Error of past period
+    sigma_sq[t] <- (a0 + a * (abs(u) + c * u)^delta + b * sqrt(sigma_sq[t-1])^delta)^(2 / delta)  # APGARCH variance update
+    LogLik[t-1] <- logtdens(yboot[t], y[t-1], sigma_sq[t], nu)  # Period t log likelihood
+  }
+  
+  # Criterion to minimize (negative of log-likelihood)
+  Q <- -sum(LogLik)
+  sumLik <- sum(LogLik)
+  
+  # One period variance forecast
+  t <- t + 1
+  u <- y[t-1] - y[t-2]
+  sigma_sq_h1 <- (a0 + a * (abs(u) + c * u)^delta + b * sqrt(sigma_sq[t-1])^delta)^(2 / delta)
+  
+  # Enforce c to be smaller than 1 in absolute value for stability
+  if (abs(c) >= 1) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce degree of freedom larger than 2
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Rule out infinity or not defined expressions
+  if (is.infinite(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.nan(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  if (is.na(Q)) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Enforce parameters to be larger than 0
+  if (min(c(a0, a, b, delta)) < 0) {
+    Q <- 1e+50 + rnorm(1)
+  }
+  
+  # Return results as a list
+  return(list(Q = Q, sigma_sq = sigma_sq, sumLik = sumLik, sigma_sq_h1 = sigma_sq_h1, params = params))
+}
+```
+
+```{r other functions}
+######## Other functions ########
+
+# Computes log density of t distribution for mean, scale sigmasq and degree of freedom nu
+logtdens <- function(x, mean, sigmasq, nu) {
+  z <- (x - mean) / sqrt(sigmasq)  # Standardization
+  logf <- lgamma((nu + 1) / 2) - 
+    ((nu + 1) / 2) * log(1 + z^2 / nu) - 
+    log(sqrt(sigmasq)) - 
+    0.5 * log(nu) - 
+    lgamma(nu / 2) - 
+    0.5 * log(pi)  # Formula for log t density
+  return(logf)
+}
+
+# Generates data (and variances) of DGP number i of size T with degree of freedom nu
+DGP <- function(i, T, nu) {
+  
+  # Preallocate scalings
+  y <- rep(0, T)
+  sigmasq <- rep(0.15, T)
+  
+  # Loop to generate data and variances
+  for (t in 3:T) {
+    u <- y[t-1] - y[t-2]  # Past error
+    
+    # Update variance according to DGP number
+    if (i == 1) {
+      # DGP1
+      sigmasq[t] <- 0.1 + 0.045 * u^2 + (0.5 + 0.45 * (u / sqrt(sigmasq[t-1]) < -0.5)) * sigmasq[t-1]
+    } else if (i == 2) {
+      # DGP2
+      sigmasq[t] <- 0.1 + 0.045 * u^2 + 0.2 * sigmasq[t-1] + (u < 0) * (0.5 + 0.15 * u^2 + 0.35 * sigmasq[t-1])
+    } else if (i == 3) {
+      # DGP3
+      sigmasq[t] <- (0.1 + 0.2 * (abs(u) - 0.5 * u) + 0.2 * sqrt(sigmasq[t-1]))^2
+    } else if (i == 4) {
+      # DGP4
+      y[2] <- 0.1
+      u <- y[t-1] - y[t-2]
+      sigmasq[t] <- 0.1 * (u^2)^0.3 * sigmasq[t-1]^0.3
+    }
+    
+    # Generate y[t] as random walk with random t errors
+    y[t] <- y[t-1] + rt(1, df = nu) * sqrt(sigmasq[t])
+  }
+  
+  # Return the generated y and sigmasq
+  return(list(y = y, sigmasq = sigmasq))
+}
+
+# Helper function to fixate functions for minimization, get starting values and extract the volatility process for a model i.
+# Starting values manually from global solver for DGP3 in Matlab.
+maxset <- function(i, nu, y, yboot) {
+  
+  # Initialize the variables
+  fixedFunction <- NULL
+  x0 <- NULL
+  sigmafunction <- NULL
+  
+  # Define the settings based on model type i
+  if (i == 1) {
+    fixedFunction <- function(x) tGARCHLikelihood(x, y, yboot)
+    x0 <- c(nu, 0.0170, 0.1937, 0.1000)
+    sigmafunction <- function(sigmalag, u, params) {
+      params[1] + params[2] * u^2 + params[3] * sigmalag
+    }
+  }
+  
+  if (i == 2) {
+    fixedFunction <- function(x) tARCHLikelihood(x, y, yboot)
+    x0 <- c(nu, 0.0195, 0.1973)
+    sigmafunction <- function(sigmalag, u, params) {
+      params[1] + params[2] * u^2
+    }
+  }
+  
+  if (i == 3) {
+    fixedFunction <- function(x) tGJRLikelihood(x, y, yboot)
+    x0 <- c(nu, 0.0165, 0.0659, 0.1283, 0.2907)
+    sigmafunction <- function(sigmalag, u, params) {
+      params[1] + (params[2] + params[4] * (u < 0)) * u^2 + params[3] * sigmalag
+    }
+  }
+  
+  if (i == 4) {
+    fixedFunction <- function(x) tEGARCHLikelihood(x, y, yboot)
+    x0 <- c(nu, -3.2400, -1.0186, 0.2074, 2.2148)
+    sigmafunction <- function(sigmalag, u, params) {
+      exp(params[1] + params[2] * u + params[4] * abs(u) + params[3] * log(sigmalag))
+    }
+  }
+  
+  if (i == 5) {
+    fixedFunction <- function(x) tTSLikelihood(x, y, yboot)
+    x0 <- c(nu, 0.1059, 0.2058, 0.1515)
+    sigmafunction <- function(sigmalag, u, params) {
+      (params[1] + params[2] * abs(u) + params[3] * sqrt(sigmalag))^2
+    }
+  }
+  
+  if (i == 6) {
+    fixedFunction <- function(x) tAPGARCHLikelihood(x, y, yboot)
+    x0 <- c(nu, 0.0553, 0.2008, 0.1677, -0.4480, 1.3361)
+    sigmafunction <- function(sigmalag, u, params) {
+      (params[1] + params[2] * (abs(u) + params[4] * u)^params[5] + 
+         params[3] * sqrt(sigmalag)^params[5])^(2 / params[5])
+    }
+  }
+  
+  # Return as a list
+  return(list(fixedFunction = fixedFunction, x0 = x0, sigmafunction = sigmafunction))
+}
+
+# Function that extracts only the negative likelihood of all likelihood functions (for optimization)
+wrapper_function <- function(theta, fixedFunction) {
+  result <- fixedFunction(theta)
+  scalar_value <- result[[1]]  # Extract the scalar value (Q)
+  return(scalar_value)
+}
+
+# Computes the criterion to minimize to estimate weights
+weightcriterion <- function(theta, sigmas, y, K, lambda, yboot) {
+  nu <- min(200, exp(theta[1])) # Degree of freedom
+  W_nolast <- theta[2:(length(theta))] # All weights except last
+  W=c(W_nolast,1-sum(W_nolast)) # Last weight as 1 - sum of all weights
+  sigmasqhat <- sigmas %*% W *(nu-2)/nu # Variances as weighted average of fitted GARCH variances
+  T <- length(y)
+  z <- (yboot[2:T] - y[1:(T-1)]) / sqrt(sigmasqhat[2:T]) # Standardization
+  
+  # Log-Likelihood
+  LogLik <- log(gamma((nu+1)/2)) - ((nu+1)/2) * log(1 + z^2 / nu) -
+    log(sqrt(sigmasqhat[2:T])) - 0.5 * log(nu) - log(gamma(nu/2)) - 0.5 * log(pi)
+  
+  Q <- -sum(LogLik) + lambda * sum(K*W) # Criterion to minimize
+  
+  if (nu <= 2) {
+    Q <- 1e+50 + rnorm(1)  # Enforce degree of freedom larger than 2
+  }
+  
+  # Bounds
+  if (min(W)<0){
+    Q=1e+50+ rnorm(1)
+  }
+  if (max(W)>1){
+    Q=1e+50+ rnorm(1)
+  }
+  return(Q)
+}
+
+# Computes empirical distribution of B 1-step ahead forecasts and volatility estimates
+# according to the suggested bootstrap algorithm
+WBoot <- function(B, nuhat, sigmas, y, What, lambda, initial) {
+  nummod <- ncol(sigmas)  # Number of models
+  T <- nrow(sigmas)  # Time series length
+  forecastdist <- numeric(B)  # Preallocate forecast distribution
+  dist <- matrix(0, nrow = T, ncol = B)  # Preallocate distribution
+  
+  # Loop over each bootstrap sample
+  for (bb in 1:B) {
+
+    yboot <- numeric(T)  # Preallocate yboot
+    yboot[1] <- y[1]
+    
+    # Generate yboot for periods 2:T
+    for (t in 2:T) {
+      yboot[t] <- y[t - 1] + sqrt(sum(What * sigmas[t, ])) * rt(1, nuhat)
+    }
+    
+    # Initialize variables
+    sigmasfit <- matrix(0, nrow = T, ncol = nummod)
+    forecasts <- numeric(nummod)
+    K <- numeric(nummod)
+    
+    # Loop over models
+    for (i in 1:nummod) {
+
+      maxset_result <- maxset(i, nuhat, y, yboot)
+      fixedFunction <- maxset_result[[1]]
+      wrapper <- function(theta) wrapper_function(theta, fixedFunction)
+      x0 <- initial[[i]]  # Starting value as estimate using real data
+      optim_result <- optimx(x0, wrapper, method = "Nelder-Mead")
+      thetahat <- as.numeric(optim_result[1:length(x0)])
+      
+      # Extract the necessary outputs from fixedFunction
+      result <- fixedFunction(thetahat)
+      sigma_sq <- result$sigma_sq
+      LogLik <- result$sumLik
+      sigma_sq_h1 <- result$sigma_sq_h1
+      
+      K[i] <- length(thetahat) - 1
+      nuhati <- min(200, thetahat[1])
+      sigmasfit[, i] <- sigma_sq * nuhati / (nuhati - 2)
+      forecasts[i] <- sigma_sq_h1 * nuhati / (nuhati - 2)
+    }
+    
+    
+    x0 <- c(nuhat, rep(1/(nummod), nummod-1)) # Starting value at equal weighting
+    
+    # Constraints that weights must be between 0 and 1 (including the last weight calculated as 1 - the sum of all other weights)
+    A <- matrix(c(0, rep(-1,nummod-1),  
+                  0,  rep(1,nummod-1)), 
+                nrow = 2, byrow = TRUE)
+    b <- c(-1, 0)
+    
+    weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, lambda, yboot)
+    result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+    thetahat=result$par 
+    Whatboot <- c(thetahat[-1],1-sum(thetahat[-1]))
+    sigmasqhat <- sigmasfit[-1,]%*%Whatboot
+    
+    forecastdist[bb] <- sum(Whatboot * forecasts)  
+    dist[, bb] <- t(Whatboot %*% t(sigmasfit)) # Save variance estimate for bootstrapped data
+  }
+  
+  list(forecastdist = forecastdist, dist = dist)
+}
+
+# Performs Bootstrap for 1-step ahead volatility forecast for GARCH-type model
+# similar to Lorenzo Pascual et al., but using t-distributed errors instead of resampled residuals
+BootParam <- function(B, thetahat, sigmas, y, ind) {
+  
+  nuhat <- min(200, thetahat[1])
+  forecastdist <- numeric(B)
+  dist <- matrix(0, nrow = length(y), ncol = B)
+  T <- length(y)
+  
+  # Get functions and parameters of the GARCH model that you want to use
+  maxset_result <- maxset(ind, nuhat, y, y)
+  fixedFunction <- maxset_result$fixedFunction
+  sigmafunction <- maxset_result$sigmafunction
+  params <- fixedFunction(thetahat)$params
+  
+  for (b in 1:B) {
+    yboot <- numeric(T)
+    yboot[1] <- y[1]
+    
+    sigmasq <- sigmas[, ind] * (nuhat - 2) / nuhat  # Adjust variance based on nuhat
+    
+    for (t in 2:T) {
+      if (t > 2) {
+        # Generate sigma according to the function of the selected model
+        sigmasq[t] <- sigmafunction(sigmasq[t - 1], yboot[t - 1] - yboot[t - 2], params)
+      }
+      # Generate bootstrap data recursively
+      yboot[t] <- yboot[t - 1] + sqrt(sigmasq[t]) * rt(1, nuhat)
+    }
+    
+    
+    maxset_result <- maxset(ind, nuhat, yboot, yboot)
+    fixedFunction_boot <- maxset_result[[1]]
+    x0 <- thetahat
+    
+    wrapper <- function(theta) wrapper_function(theta, fixedFunction_boot)
+    optim_result <- optimx(x0, wrapper, method = "Nelder-Mead")
+    thetahatboot <- as.numeric(optim_result[1:length(x0)])
+    
+    # Get sigma forecast with actual data and newly estimated parameters
+    fixedFunction_actual <- maxset(ind, nuhat, y, y)$fixedFunction
+    result <- fixedFunction_actual(thetahatboot)
+    
+    sigma_sq <- result$sigma_sq
+    sigma_sq_h1 <- result$sigma_sq_h1
+    nuhatboot <- min(200, thetahatboot[1])
+    
+    # Save variance forecast with bootstrap data
+    forecastdist[b] <- sigma_sq_h1 * nuhatboot / (nuhatboot - 2)
+    dist[, b] <- sigma_sq * nuhatboot / (nuhatboot - 2)
+  }
+  
+  list(forecastdist = forecastdist, dist = dist)
+}
+```
+
+```{r Simulation 1, echo=FALSE}
+######## Performs simulation with increasing Sample Sizes for the 4 DGPs of the weighting estimator ########
+nu <- 10  # Degree of freedom to generate data
+nummod <- 6  # Choose how many models to use
+burn <- 100  # Number of burn-in periods
+lambda <- 0  # Penalty for many parameters
+Ts=c(500,1000,2500,5000,10000,20000)
+IS=matrix(0, nrow=length(Ts),ncol=4)
+MC=5
+set.seed(666)
+for (m in 1:length(Ts)){
+  for (n in 1:4){
+    ISsimul=matrix(0,nrow=MC,ncol=1)
+    for (l in 1:MC){
+    DGPnum=n
+    T=Ts[m]
+    
+    # Generate data
+    result <- DGP(DGPnum, T  + burn, nu)
+    y <- result[[1]]
+    sigmasqtrue <- result[[2]]
+    
+
+    # Use data after burn in before forecast period
+    y <- y[(burn + 1):(length(y))]  
+    sigmasqtrue <- sigmasqtrue[(burn + 2):(length(sigmasqtrue))] * nu / (nu - 2)  # Save true variances
+    
+    sigmasfit <- matrix(0, nrow = T, ncol = nummod)  # Preallocate fitted variances
+    K <- numeric(nummod)  # Preallocation K
+    nuhats <- numeric(nummod)  # Preallocate estimated degree of freedoms
+    
+    # Repeat the following steps for each GARCH-type model
+    for (i in 1:nummod) {
+      maxset_result <- maxset(i, nu, y, y)
+      fixedFunction <- maxset_result[[1]]
+      x0 <- maxset_result[[2]]
+      
+      wrapper <- function(theta) wrapper_function(theta, fixedFunction)
+      optim_result <- optimx(x0, wrapper, method = "Nelder-Mead")
+      thetahat <- as.numeric(optim_result[1:length(x0)])
+      
+      nuhats[i] <- min(200, thetahat[1])  # Estimated degree of freedom
+      result <- fixedFunction(thetahat)
+      sigma_sq <- result[[2]]
+
+      K[i] <- length(thetahat) - 1  # Update K
+      sigmasfit[, i] <- sigma_sq * nuhats[i] / (nuhats[i] - 2)  # Save fitted variances
+      
+    }
+    
+    x0 <- c(nu, rep(1/(nummod), nummod-1)) # Starting value at equal weighting
+    
+    # Constraints that weights must be between 0 and 1 (including the last weight calculated as 1 - the sum of all other weights)
+    A <- matrix(c(0, rep(-1,nummod-1),  
+                  0,  rep(1,nummod-1)), 
+                nrow = 2, byrow = TRUE)
+    b <- c(-1, 0)
+    
+    # Weight estimator 
+    weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, lambda, y)
+    result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+    thetahat=result$par 
+    What <- c(thetahat[-1],1-sum(thetahat[-1]))
+    sigmasqhat <- sigmasfit[-1,]%*%What
+    ISsimul[l] <- mean(sigmasqtrue / (sigmasqhat) - log(sigmasqtrue / (sigmasqhat)) - 1) # Save IS distances for weighting estimator with different lambdas and AIC and BIC model
+    }
+    IS[m,n] <- mean(ISsimul)
+  }
+}
+
+par(mfrow = c(2, 2))
+plot(Ts[1:6], IS[1:6,1], type = "l", col = "blue", main = "DGP1", xlab="T", ylab="IS",ylim=c(0, 0.03))
+plot(Ts[1:6], IS[1:6,2], type = "l", col = "blue", main = "DGP2", xlab="T", ylab="IS")
+plot(Ts[1:6], IS[1:6,3], type = "l", col = "blue", main = "DGP3", xlab="T", ylab="IS",ylim=c(0, 0.03))
+plot(Ts[1:6], IS[1:6,4], type = "l", col = "blue", main = "DGP4", xlab="T", ylab="IS",ylim=c(0, 0.03))
+
+```
+
+```{r Simulation 2}
+######## Performs Simulation to compare weighting estimates and forecasts with IC selected estimates and forecasts ########
+
+MC <- 10  # Number of Monte Carlo simulations (for scaled up version and results in presentation we refer to Matlab Code)
+IS <- matrix(0, nrow = MC, ncol = 5)  # Preallocate IS distances
+nu <- 10  # Degree of freedom to generate data
+DGPnum <- 1  # Choose which DGP to generate data from
+nummod <- 4  # Choose how many models to use
+h <- 5  # Forecast horizon
+T <- 500  # Sample size
+ForecastDist <- array(0, dim = c(MC, h, 5))  # Preallocate IS distance for Forecast
+burn <- 100  # Number of burn-in periods
+hsimul <- 1000  # Number of simulations for h-step forecast h > 1
+set.seed(666)
+
+# Monte Carlo Simulations
+for (m in 1:MC) {
+  # Generate data
+  result <- DGP(DGPnum, T + h + burn, nu)
+  y <- result[[1]]
+  sigmasqtrue <- result[[2]]
+  
+  # Extract true future variances
+  sigmafut <- sigmasqtrue[(length(sigmasqtrue) - h + 1):length(sigmasqtrue)] * nu / (nu - 2) 
+  
+  # Use data after burn in before forecast period
+  y <- y[(burn + 1):(length(y)-h)]  
+  sigmasqtrue <- sigmasqtrue[(burn + 2):(length(sigmasqtrue) - h)] * nu / (nu - 2)  # Save true variances
+  
+  sigmasfit <- matrix(0, nrow = T, ncol = nummod)  # Preallocate fitted variances
+  ICs <- matrix(0, nrow = nummod, ncol = 2)  # Preallocate information criteria
+  K <- numeric(nummod)  # Preallocation K
+  modelforecasts <- matrix(0, nrow = h, ncol = nummod)  # Preallocate Forecasts
+  nuhats <- numeric(nummod)  # Preallocate estimated degree of freedoms
+  
+  # Repeat the following steps for each GARCH-type model
+  for (i in 1:nummod) {
+    maxset_result <- maxset(i, nu, y, y)
+    fixedFunction <- maxset_result[[1]]
+    x0 <- maxset_result[[2]]
+    
+    wrapper <- function(theta) wrapper_function(theta, fixedFunction)
+    optim_result <- optimx(x0, wrapper, method = "Nelder-Mead")
+    thetahat <- as.numeric(optim_result[1:length(x0)])
+
+    nuhats[i] <- min(200, thetahat[1])  # Estimated degree of freedom
+    result <- fixedFunction(thetahat)
+    sigma_sq <- result[[2]]
+    LogLik <- result[[3]]
+    params <- result[[5]]
+    
+    ICs[i, 1] <- -2 * LogLik + log(T) * (-1 + length(thetahat))  # BIC information criterion
+    ICs[i, 2] <- -2 * LogLik + 2 * (-1 + length(thetahat))  # AIC information criterion
+    K[i] <- length(thetahat) - 1  # Update K
+    sigmasfit[, i] <- sigma_sq * nuhats[i] / (nuhats[i] - 2)  # Save fitted variances
+    
+    # Simulated h-step forecasts
+    sigmafunction <- maxset(i, nuhats[i], y, y)[[3]]  # Return function for variance process
+    sigmasimul <- matrix(0, nrow = hsimul, ncol = h)
+
+    # Repeat simulations hsimul times
+    set.seed(m)
+    for (ii in 1:hsimul) {
+      u <- y[length(y)] - y[length(y) - 1]
+      sigmalag <- sigma_sq[length(sigma_sq)]
+      for (j in 1:h) {
+        sigmasimul[ii, j] <- sigmafunction(sigmalag, u, params)  # Simulate Sigma one step ahead
+        sigmalag <- sigmasimul[ii, j]  # Update Sigma
+        u <- rt(1, min(200, exp(thetahat[1]))) * sqrt(sigmalag)  # Simulate error
+      }
+    }
+    modelforecasts[, i] <- colMeans(sigmasimul) * nuhats[i] / (nuhats[i] - 2)  # Estimate the forecast as mean of simulations
+  }
+  
+  x0 <- c(nu, rep(1/(nummod), nummod-1)) # Starting value at equal weighting
+  
+  # Constraints that weights must be between 0 and 1 (including the last weight calculated as 1 - the sum of all other weights)
+  A <- matrix(c(0, rep(-1,nummod-1),  
+                0,  rep(1,nummod-1)), 
+              nrow = 2, byrow = TRUE)
+  b <- c(-1, 0)
+  
+  # Weight estimator Lambda = 0
+  weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, 0, y)
+  result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+  thetahat=result$par 
+  What <- c(thetahat[-1],1-sum(thetahat[-1]))
+  sigmasqhat <- sigmasfit[-1,]%*%What
+  
+  
+  # Weight estimator Lambda = 1
+  weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, 1, y)
+  result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+  thetahat=result$par 
+  WhatAIC <- c(thetahat[-1],1-sum(thetahat[-1]))
+  sigmasqhataic <- sigmasfit[-1,]%*%WhatAIC
+  
+  # Weight estimator Lambda = 0.5 log(T)
+  weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, 0.5*log(T), y)
+  result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+  thetahat=result$par 
+  WhatBIC <- c(thetahat[-1],1-sum(thetahat[-1]))
+  sigmasqhatbic <- sigmasfit[-1,]%*%WhatBIC
+  
+  # AIC and BIC selected models
+  aicsel <- which(ICs[, 2] == min(ICs[, 2]))  # Find minimum of AIC
+  bicsel <- which(ICs[, 1] == min(ICs[, 1]))  # Find minimum of BIC
+  sigmaaic <- sigmasfit[-1, aicsel]  # Variances of AIC minimizing model
+  sigmabic <- sigmasfit[-1, bicsel]  # Variances of BIC minimizing model
+  
+  # Save IS distances for weighting estimator with different lambdas and AIC and BIC model
+  IS1 <- mean(sigmasqtrue / (sigmasqhat) - log(sigmasqtrue / (sigmasqhat)) - 1)
+  IS2 <- mean(sigmasqtrue / (sigmasqhataic) - log(sigmasqtrue / (sigmasqhataic)) - 1)
+  IS3 <- mean(sigmasqtrue / (sigmasqhatbic) - log(sigmasqtrue / (sigmasqhatbic)) - 1)
+  IS4 <- mean(sigmasqtrue / (sigmaaic) - log(sigmasqtrue / (sigmaaic)) - 1)
+  IS5 <- mean(sigmasqtrue / (sigmabic) - log(sigmasqtrue / (sigmabic)) - 1)
+  IS[m, ] <- c(IS1, IS2, IS3, IS4, IS5)
+  
+  # Save IS distances for Forecast for weighting estimator with different lambdas and AIC and BIC model
+  ForecastDist[m, , 1] <- sigmafut / (What %*% t(modelforecasts)) - log(sigmafut / (What %*% t(modelforecasts))) - 1
+  ForecastDist[m, , 2] <- sigmafut / (WhatAIC %*% t(modelforecasts)) - log(sigmafut / (WhatAIC %*% t(modelforecasts))) - 1
+  ForecastDist[m, , 3] <- sigmafut / (WhatBIC %*% t(modelforecasts)) - log(sigmafut / (WhatBIC %*% t(modelforecasts))) - 1
+  ForecastDist[m, , 4] <- sigmafut / (modelforecasts[, aicsel]) - log(sigmafut / (modelforecasts[, aicsel])) - 1
+  ForecastDist[m, , 5] <- sigmafut / (modelforecasts[, bicsel]) - log(sigmafut / (modelforecasts[, bicsel])) - 1
+}
+
+cat("The average IS distance for weight estimate with lambda=0 is", mean(IS[,1]), "\n")
+cat("The average IS distance for weight estimate with lambda=1 is", mean(IS[,2]), "\n")
+cat("The average IS distance for weight estimate with lambda=0.5log(T) is", mean(IS[,3]), "\n")
+cat("The average IS distance for AIC model is", mean(IS[,4]), "\n")
+cat("The average IS distance for BIC model is", mean(IS[,5]), "\n")
+
+cat("The average IS-distance for the 1-5 step variance forecast for weight estimate with lambda=0 is", apply(ForecastDist[, , 1], 2, mean), "\n")
+cat("The average IS-distance for the 1-5 step variance forecast for weight estimate with lambda=1 is", apply(ForecastDist[, , 2], 2, mean), "\n")
+cat("The average IS-distance for the 1-5 step variance forecast for weight estimate with lambda=0.5log(T) is", apply(ForecastDist[, , 3], 2, mean), "\n")
+cat("The average IS-distance for the 1-5 step variance forecast for AIC model is", apply(ForecastDist[, , 4], 2, mean), "\n")
+cat("The average IS-distance for the 1-5 step variance forecast for BIC model is", apply(ForecastDist[, , 5], 2, mean), "\n")
+
+```
+
+```{r Bootstrap}
+######## Performs Monte Carlo Simulation of Bootstrap procedures ########
+
+MC <- 10  # Number of Monte Carlo simulations (Matlab for Scaled Up Version)
+coverage <- matrix(1, nrow = MC, ncol = 4)  # Preallocate coverage rates of confidence intervals
+T <- 500  # Sample size
+B <- 100  # Number of Bootstrap simulations
+nu <- 10  # Degree of freedom to generate data
+lambda <- 0  # Penalty for large models for weighting estimator
+DGPnum <- 3  # DGP number (e.g., APGARCH)
+nummod <- 6  # Number of models used for estimation
+burn <- 100  # Number of burn-in periods
+set.seed(666)
+
+# Monte Carlo simulation loop
+for (m in 1:MC) {
+  
+  # Generate data
+  data <- DGP(DGPnum, T + burn, nu)
+  y <- data$y[burn:(length(data$y) - 1)]  # Use data after burn-in before forecast period
+  fut <- data$sigmasq[length(data$sigmasq)] * nu / (nu - 2)  # Future variance
+  
+  sigmasfit <- matrix(0, nrow = T, ncol = nummod)  # Preallocate fitted variances
+  forecasts <- numeric(nummod)  # Preallocate forecasts
+  K <- numeric(nummod)  # Preallocate K
+  thetahats <- vector("list", nummod)  # Preallocate estimated coefficients
+  AIC <- numeric(nummod)  # Preallocate Akaike information criteria
+  
+  # Estimation loop for each model in the model set
+  for (i in 1:nummod) {
+    maxset_result <- maxset(i, nu, y, y)
+    fixedFunction <- maxset_result[[1]]
+    x0 <- maxset_result[[2]]
+    
+    wrapper <- function(theta) wrapper_function(theta, fixedFunction)
+    optim_result <- optimx(x0, wrapper, method = "Nelder-Mead")
+    thetahat <- as.numeric(optim_result[1:length(x0)])
+    
+    thetahats[[i]] <- thetahat  # Save estimates of model i
+    
+    result <- fixedFunction(thetahat)
+    sigma_sq <- result[[2]]
+    LogLik <- result[[3]]
+    params <- result[[5]]
+    
+    K[i] <- length(thetahat) - 1
+    AIC[i] <- -2 * LogLik + 2 * (length(thetahat) - 1)  # Calculate AIC
+    nuhat <- min(200, thetahat[1])
+    sigmasfit[, i] <- sigma_sq * nuhat / (nuhat - 2)  # Save fitted variances
+  }
+  
+  x0 <- c(nu, rep(1/(nummod), nummod-1)) # Starting value at equal weighting
+  
+  # Constraints that weights must be between 0 and 1 (including the last weight calculated as 1 - the sum of all other weights)
+  A <- matrix(c(0, rep(-1,nummod-1),  
+                0,  rep(1,nummod-1)), 
+              nrow = 2, byrow = TRUE)
+  b <- c(-1, 0)
+  
+  # Weight estimator 
+  weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, lambda, y)
+  result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+  thetahat=result$par 
+  What <- c(thetahat[-1],1-sum(thetahat[-1]))
+  nuhat <- min(200, thetahat[1])  # Estimated degree of freedom
+  
+  # AIC selected model
+  aicsel <- which.min(AIC)
+  
+  
+  # Bootstrap density using the weighting estimator and suggested method
+  Wbootresult <- WBoot(B, nuhat, sigmasfit * (nuhat - 2) / nuhat, y, What, lambda, thetahats)
+  
+  # Standard Bootstrap around AIC model
+  parambootresult <- BootParam(B, thetahats[[aicsel]], sigmasfit, y, aicsel)
+  
+  dist <- Wbootresult$forecastdist
+  distparam <- parambootresult$forecastdist
+  
+  # 90% Intervals for weight-bootstrap
+  lower <- quantile(dist, 0.05)
+  upper <- quantile(dist, 0.95)
+  if (fut < lower[1] || fut > upper[1]) coverage[m, 1] <- 0
+  
+  # 95% Intervals for weight-bootstrap
+  lower <- quantile(dist, 0.025)
+  upper <- quantile(dist, 0.975)
+  if (fut < lower[1] || fut > upper[1]) coverage[m, 2] <- 0
+  
+  # 90% Intervals for recursive bootstrap
+  lower <- quantile(distparam, 0.05)
+  upper <- quantile(distparam, 0.95)
+  if (fut < lower[1] || fut > upper[1]) coverage[m, 3] <- 0
+  
+  # 95% Intervals for recursive bootstrap
+  lower <- quantile(distparam, 0.025)
+  upper <- quantile(distparam, 0.975)
+  if (fut < lower[1] || fut > upper[1]) coverage[m, 4] <- 0
+}
+
+cat("The coverage rate of the 90% confidence interval for weight bootstrap is", mean(coverage[,1]), "\n")
+cat("The coverage rate of the 95% confidence interval for weight bootstrap is", mean(coverage[,2]), "\n")
+cat("The coverage rate of the 90% confidence interval for AIC bootstrap is", mean(coverage[,3]), "\n")
+cat("The coverage rate of the 95% confidence interval for AIC bootstrap is", mean(coverage[,4]), "\n")
+
+```
+
+```{r Data, echo=FALSE}
+######## Application to Exchange Rate Data ########
+
+data = read.csv("C:/Users/lucap/OneDrive/Dokumente/Uni Master/Semester 4/Reitz Seminar/R/ECB Data Jan20-sept24.csv")
+
+dates=data$DATE
+dates=as.Date(dates)
+
+y=data$US.dollar.Euro
+
+y=100*log(y)
+
+T=length(y)
+nummod <- 6  # Choose how many models to use
+sigmasfit <- matrix(0, nrow = T, ncol = nummod)  # Preallocate fitted variances
+K <- numeric(nummod)  # Preallocation K
+nuhats <- numeric(nummod)  # Preallocate estimated degree of freedoms
+AIC <- numeric(nummod)  # Preallocate Akaike information criteria
+thetahats <- vector("list", nummod)  # Preallocate estimated coefficients
+B=100
+
+# Repeat the following steps for each GARCH-type model
+for (i in 1:nummod) {
+  maxset_result <- maxset(i, 10, y, y)
+  fixedFunction <- maxset_result[[1]]
+  x0 <- maxset_result[[2]]
+  
+  wrapper <- function(theta) wrapper_function(theta, fixedFunction)
+  optim_result <- optimx(x0, wrapper, method = "Nelder-Mead")
+  thetahat <- as.numeric(optim_result[1:length(x0)])
+  thetahats[[i]] <- thetahat  # Save estimates of model i
+  
+  nuhats[i] <- min(200, thetahat[1])  # Estimated degree of freedom
+  result <- fixedFunction(thetahat)
+  sigma_sq <- result[[2]]
+  LogLik <- result[[3]]
+  params <- result[[5]]
+  
+  AIC[i] <- -2 * LogLik + 2 * (-1 + length(thetahat))  # AIC information criterion
+  K[i] <- length(thetahat) - 1  # Update K
+  sigmasfit[, i] <- sigma_sq * nuhats[i] / (nuhats[i] - 2)  # Save fitted variances
+}
+
+
+x0 <- c(10, rep(1/(nummod), nummod-1)) # Starting value at equal weighting
+
+# Constraints that weights must be between 0 and 1 (including the last weight calculated as 1 - the sum of all other weights)
+A <- matrix(c(0, rep(-1,nummod-1),  
+              0,  rep(1,nummod-1)), 
+            nrow = 2, byrow = TRUE)
+b <- c(-1, 0)
+
+# Weight estimator Lambda = 0
+weight_function <- function(x) weightcriterion(x, sigmasfit, y, K, 0, y)
+result <- constrOptim(theta = x0, f = weight_function,grad = NULL, ui = A, ci = b)
+thetahat=result$par 
+nuhat=thetahat[1]
+What <- c(thetahat[-1],1-sum(thetahat[-1]))
+sigmasqhat <- sigmasfit[-1,]%*%What
+aicsel <- which.min(AIC)
+
+set.seed(666)
+
+# Bootstrap density using the weighting estimator and suggested method
+Wbootresult <- WBoot(B, nuhat, sigmasfit * (nuhat - 2) / nuhat, y, What, 0, thetahats)
+
+# Standard Bootstrap around AIC model
+parambootresult <- BootParam(B, thetahats[[aicsel]], sigmasfit, y, aicsel)
+
+wbootmat <- Wbootresult$dist
+parambootmat <- parambootresult$dist
+
+wlower <- apply(wbootmat[-1,], 1, function(row) quantile(row, probs=0.05))
+wupper <- apply(wbootmat[-1,], 1, function(row) quantile(row, probs=0.95))
+
+paramlower <- apply(parambootmat[-1,], 1, function(row) quantile(row, probs=0.05))
+paramupper <- apply(parambootmat[-1,], 1, function(row) quantile(row, probs=0.95))
+
+plot(dates[-1],y[2:length(y)]-y[1:(length(y)-1)],type="l",ylab="Daily Returns in %",xlab="Dates", main="Dollar/Euro Exchange Rate")
+
+par(mfrow=c(1, 2))  
+plot(dates[-1],sigmasqhat, type="l", ylim=c(0, 1), 
+     ylab="Variance", xlab="Date", main="Weighting Estimate and 0.9 CI", col="blue", lwd=2)
+lines(dates[-1],wlower, col="red", lty=2)  
+lines(dates[-1],wupper, col="red", lty=2)  
+plot(dates[-1],sigmasfit[-1,aicsel], type="l", ylim=c(0, 1), 
+     ylab="Variance", xlab="Date", main="AIC Estimate and 0.9 CI", col="blue", lwd=2)
+lines(dates[-1],paramlower, col="red", lty=2)  
+lines(dates[-1],paramupper, col="red", lty=2)  
+
+par(mfrow=c(1, 1))  
+plot(dates[-1],sigmasqhat/sigmasfit[-1,aicsel], type="l", 
+     ylab="Ratio", xlab="Date", main="Ratio of Weight Estimate to AIC Estimate", col="blue", lwd=2)
+lines(dates[-1],rep(1,length(dates[-1])))
+
+par(mfrow=c(1, 1))  
+plot(dates[-1],(wupper/wlower) / (paramupper/paramlower), type="l", 
+     ylab="Ratio", xlab="Date", main="Ratio of upper to lower bound of Weight CI to AIC CI", col="blue", lwd=2)
+lines(dates[-1],rep(1,length(dates[-1])))
+
+```
+
+
+
+
+
+
